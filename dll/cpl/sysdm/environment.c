@@ -4,10 +4,14 @@
  * FILE:        dll/cpl/sysdm/environment.c
  * PURPOSE:     Environment variable settings
  * COPYRIGHT:   Copyright Eric Kohl
+ *              Copyright Arnav Bhatt <arnavbhatt288@gmail.com>
  *
  */
 
 #include "precomp.h"
+#include <commdlg.h>
+#include <string.h>
+#include <strsafe.h>
 
 typedef struct _VARIABLE_DATA
 {
@@ -17,6 +21,102 @@ typedef struct _VARIABLE_DATA
     LPTSTR lpCookedValue;
 } VARIABLE_DATA, *PVARIABLE_DATA;
 
+typedef struct _DIALOG_DATA
+{
+    BOOL bIsFriendlyUI;
+    DWORD dwSelectedValueIndex;
+    DWORD dwTextEditedValueIndex;
+    HWND hEditBox;
+    PVARIABLE_DATA VarData;
+} DIALOG_DATA, *PDIALOG_DATA;
+
+static DWORD
+GatherDataFromEditBox(HWND hwndDlg,
+                      PVARIABLE_DATA VarData)
+{
+    DWORD dwNameLength;
+    DWORD dwValueLength;
+
+    dwNameLength = (DWORD)SendDlgItemMessage(hwndDlg, IDC_VARIABLE_NAME, WM_GETTEXTLENGTH, 0, 0);
+    dwValueLength = (DWORD)SendDlgItemMessage(hwndDlg, IDC_VARIABLE_VALUE, WM_GETTEXTLENGTH, 0, 0);
+
+    if (dwNameLength == 0 || dwValueLength == 0)
+    {
+        return 0;
+    }
+    if (VarData->lpName == NULL)
+    {
+        VarData->lpName = GlobalAlloc(GPTR, (dwNameLength + 1) * sizeof(TCHAR));
+    }
+    else if (_tcslen(VarData->lpName) < dwNameLength)
+    {
+        GlobalFree(VarData->lpName);
+        VarData->lpName = GlobalAlloc(GPTR, (dwNameLength + 1) * sizeof(TCHAR));
+    }
+    SendDlgItemMessage(hwndDlg, IDC_VARIABLE_NAME, WM_GETTEXT, dwNameLength + 1, (LPARAM)VarData->lpName);
+
+    if (VarData->lpRawValue == NULL)
+    {
+        VarData->lpRawValue = GlobalAlloc(GPTR, (dwValueLength + 1) * sizeof(TCHAR));
+    }
+    else if (_tcslen(VarData->lpRawValue) < dwValueLength)
+    {
+        GlobalFree(VarData->lpRawValue);
+        VarData->lpRawValue = GlobalAlloc(GPTR, (dwValueLength + 1) * sizeof(TCHAR));
+    }
+    SendDlgItemMessage(hwndDlg, IDC_VARIABLE_VALUE, WM_GETTEXT, dwValueLength + 1, (LPARAM)VarData->lpRawValue);
+    
+    return dwValueLength;
+}
+
+static DWORD
+GatherDataFromListBox(HWND hwndDlg,
+                      PVARIABLE_DATA VarData)
+{
+    DWORD dwValueLength;
+    DWORD NumberOfItems;
+    DWORD i;
+    TCHAR szData[MAX_PATH];
+
+    /* Gather the number of items for the semi-colon */
+    NumberOfItems = SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCOUNT, 0, 0);
+
+    if (NumberOfItems == 0)
+    {
+        return 0;
+    }
+
+    /* Since the last item doesn't need the semi-colon subtract 1 */
+    dwValueLength = NumberOfItems - 1;
+
+    for (i = 0; NumberOfItems > i; i++)
+    {
+        dwValueLength += SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETTEXTLEN, i, 0);
+    }
+
+    if (VarData->lpRawValue == NULL)
+    {
+        VarData->lpRawValue = GlobalAlloc(GPTR, (dwValueLength + 1) * sizeof(TCHAR));
+    }
+    else if (_tcslen(VarData->lpRawValue) < dwValueLength)
+    {
+        GlobalFree(VarData->lpRawValue);
+        VarData->lpRawValue = GlobalAlloc(GPTR, (dwValueLength + 1) * sizeof(TCHAR));
+    }
+                    
+    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETTEXT, 0, (LPARAM)szData);
+    StringCchCopy(VarData->lpRawValue, dwValueLength + 1, szData);
+                    
+    for (i = 1; NumberOfItems > i; i++)
+    {
+        StringCchCat(VarData->lpRawValue, dwValueLength + 1, _T(";"));
+        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETTEXT, i, (LPARAM)szData);
+        StringCchCat(VarData->lpRawValue, dwValueLength + 1, szData);
+    }
+    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETTEXT, NumberOfItems, (LPARAM)szData);
+    
+    return dwValueLength;
+}
 
 static INT
 GetSelectedListViewItem(HWND hwndListView)
@@ -45,6 +145,194 @@ GetSelectedListViewItem(HWND hwndListView)
     return -1;
 }
 
+static VOID
+AddValuesToListBox(HWND hwndDlg,
+                   PDIALOG_DATA DlgData)
+{
+    TCHAR szTemp[wcslen(DlgData->VarData->lpRawValue) + 1];
+    LPTSTR lpToken;
+
+    StringCchCopy(szTemp, _countof(szTemp), DlgData->VarData->lpRawValue);
+    lpToken = wcstok(szTemp, _T(";"));
+
+    while (lpToken != NULL)
+    {
+        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_ADDSTRING, 0, (LPARAM)lpToken);
+        lpToken = wcstok(NULL, _T(";"));
+    }
+    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_SETCURSEL, 0, 0);
+    DlgData->dwSelectedValueIndex = 0;
+}
+
+static VOID
+BrowseRequiredFile(HWND hwndDlg)
+{
+    OPENFILENAME ofn;
+    TCHAR szFile[MAX_PATH] = _T("");
+
+    ZeroMemory(&ofn, sizeof(ofn));
+
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwndDlg;
+    ofn.lpstrFilter = _T("All Files (*.*)\0*.*\0");
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+
+    if(GetOpenFileName(&ofn))
+    {
+        SetDlgItemText(hwndDlg, IDC_VARIABLE_VALUE, szFile);
+    }
+}
+
+static VOID
+BrowseRequiredFolder(HWND hwndDlg,
+                    PDIALOG_DATA DlgData)
+{
+    BROWSEINFO bi;
+    LPITEMIDLIST pidllist;
+    TCHAR szDir[MAX_PATH];
+
+    bi.hwndOwner = hwndDlg;
+    bi.lpszTitle = _T("");
+    bi.pidlRoot = NULL;
+    bi.pszDisplayName = _T("");
+    bi.ulFlags = BIF_NEWDIALOGSTYLE;
+
+    pidllist = SHBrowseForFolder(&bi);
+    if (!pidllist)
+    {
+        return;
+    }
+
+    if (SHGetPathFromIDList(pidllist, szDir))
+    {
+        if (DlgData->bIsFriendlyUI)
+        {
+            SendDlgItemMessage(hwndDlg,
+                               IDC_LIST_VARIABLE_VALUE,
+                               LB_DELETESTRING,
+                               DlgData->dwSelectedValueIndex, 0);
+            SendDlgItemMessage(hwndDlg,
+                               IDC_LIST_VARIABLE_VALUE,
+                               LB_INSERTSTRING,
+                               DlgData->dwSelectedValueIndex,
+                               (LPARAM)szDir);
+            SendDlgItemMessage(hwndDlg,
+                               IDC_LIST_VARIABLE_VALUE,
+                               LB_SETCURSEL,
+                               DlgData->dwSelectedValueIndex, 0);
+        }
+
+        else
+        {
+            SetDlgItemText(hwndDlg, IDC_VARIABLE_VALUE, szDir);
+        }
+    }
+
+    CoTaskMemFree(pidllist);
+}
+
+static VOID
+ItemEditStarts(HWND hwndDlg,
+               PDIALOG_DATA DlgData)
+{
+    RECT rItem;
+    HFONT hFont = NULL;
+    TCHAR szStr[MAX_PATH] = _T("");
+
+    /* Get item rect */
+    SendDlgItemMessage(hwndDlg,
+                       IDC_LIST_VARIABLE_VALUE,
+                       LB_GETITEMRECT,
+                       DlgData->dwSelectedValueIndex,
+                       (LPARAM)&rItem);
+
+    /* Get string from item */
+    SendDlgItemMessage(hwndDlg,
+                       IDC_LIST_VARIABLE_VALUE,
+                       LB_GETTEXT,
+                       DlgData->dwSelectedValueIndex,
+                       (LPARAM)szStr);
+
+    DlgData->hEditBox = CreateWindow(_T("EDIT"),
+                                     szStr,
+                                     WS_VISIBLE | WS_CHILD | WS_BORDER |
+                                     ES_LEFT | ES_AUTOHSCROLL,
+                                     rItem.left, rItem.top,
+                                     rItem.right, rItem.bottom - rItem.top,
+                                     GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE),
+                                     NULL,
+                                     hApplet,
+                                     NULL);
+
+    hFont = (HFONT)SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, WM_GETFONT, 0, 0);
+    SendMessage(DlgData->hEditBox, WM_SETFONT, (WPARAM)hFont, TRUE);
+    SendMessage(DlgData->hEditBox, EM_SETSEL, 0, -1);
+    SetFocus(DlgData->hEditBox);
+    DlgData->dwTextEditedValueIndex = DlgData->dwSelectedValueIndex;
+}
+
+static VOID
+ItemEditEnds(HWND hwndDlg,
+             PDIALOG_DATA DlgData)
+{
+    TCHAR szStr[MAX_PATH] = _T("");
+    TCHAR szStr2[MAX_PATH] = _T("");
+
+    SendMessage(DlgData->hEditBox, WM_GETTEXT, MAX_PATH, (LPARAM)szStr);
+    SendDlgItemMessage(hwndDlg,
+                       IDC_LIST_VARIABLE_VALUE,
+                       LB_GETTEXT,
+                       DlgData->dwTextEditedValueIndex,
+                       (LPARAM)szStr2);
+    SendDlgItemMessage(hwndDlg,
+                       IDC_LIST_VARIABLE_VALUE,
+                       LB_DELETESTRING,
+                       DlgData->dwTextEditedValueIndex, 0);
+
+    if (wcscmp(szStr, _T("")) != 0 || wcscmp(szStr, szStr2) != 0)
+    {
+        SendDlgItemMessage(hwndDlg,
+                           IDC_LIST_VARIABLE_VALUE,
+                           LB_INSERTSTRING,
+                           DlgData->dwTextEditedValueIndex, (LPARAM)szStr);
+    }
+    else
+    {
+        SendDlgItemMessage(hwndDlg,
+                           IDC_LIST_VARIABLE_VALUE,
+                           LB_SETCURSEL,
+                           DlgData->dwTextEditedValueIndex - 1, 0);
+
+        DlgData->dwSelectedValueIndex = DlgData->dwTextEditedValueIndex - 1;
+    }
+
+    DestroyWindow(DlgData->hEditBox);
+    DlgData->dwTextEditedValueIndex = -1;
+}
+
+static VOID
+MoveListItem(HWND hwndDlg,
+             PDIALOG_DATA DlgData,
+             BOOL bMoveUp)
+{
+    TCHAR szDest[MAX_PATH];
+    DWORD dwSrcIndex, dwDestIndex, dwTotalIndex;
+    
+    dwTotalIndex = SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCOUNT, 0, 0) - 1;
+    dwSrcIndex = DlgData->dwSelectedValueIndex;
+    dwDestIndex = bMoveUp ? (dwSrcIndex - 1) : (dwSrcIndex + 1);
+    
+    if ((bMoveUp && dwSrcIndex > 0) || (!bMoveUp && dwSrcIndex < dwTotalIndex))
+    {
+        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETTEXT, dwSrcIndex, (LPARAM)szDest);
+        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_DELETESTRING, dwSrcIndex, 0);
+        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_INSERTSTRING, dwDestIndex, (LPARAM)szDest);
+        DlgData->dwSelectedValueIndex = dwDestIndex;
+        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_SETCURSEL, DlgData->dwSelectedValueIndex, 0);
+    }
+}
 
 static INT_PTR CALLBACK
 EditVariableDlgProc(HWND hwndDlg,
@@ -52,90 +340,228 @@ EditVariableDlgProc(HWND hwndDlg,
                     WPARAM wParam,
                     LPARAM lParam)
 {
-    PVARIABLE_DATA VarData;
-    DWORD dwNameLength;
-    DWORD dwValueLength;
+    PDIALOG_DATA DlgData;
 
-    VarData = (PVARIABLE_DATA)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
+    DlgData = (PDIALOG_DATA)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
 
     switch (uMsg)
     {
         case WM_INITDIALOG:
             SetWindowLongPtr(hwndDlg, GWLP_USERDATA, (LONG_PTR)lParam);
-            VarData = (PVARIABLE_DATA)lParam;
+            DlgData = (PDIALOG_DATA)lParam;
 
-            if (VarData->lpName != NULL)
+            /* Either get the values from list box or from edit box */
+            if (DlgData->bIsFriendlyUI)
             {
-                SendDlgItemMessage(hwndDlg, IDC_VARIABLE_NAME, WM_SETTEXT, 0, (LPARAM)VarData->lpName);
+                if (DlgData->VarData->lpRawValue != NULL)
+                {
+                    AddValuesToListBox(hwndDlg, DlgData);
+                }
             }
-
-            if (VarData->lpRawValue != NULL)
+            else
             {
-                SendDlgItemMessage(hwndDlg, IDC_VARIABLE_VALUE, WM_SETTEXT, 0, (LPARAM)VarData->lpRawValue);
+                if (DlgData->VarData->lpName != NULL)
+                {
+                    SendDlgItemMessage(hwndDlg, IDC_VARIABLE_NAME, WM_SETTEXT, 0, (LPARAM)DlgData->VarData->lpName);
+                }
+
+                if (DlgData->VarData->lpRawValue != NULL)
+                {
+                    SendDlgItemMessage(hwndDlg, IDC_VARIABLE_VALUE, WM_SETTEXT, 0, (LPARAM)DlgData->VarData->lpRawValue);
+                }
             }
             break;
 
         case WM_COMMAND:
+            switch (HIWORD(wParam))
+            {   
+                case LBN_DBLCLK:
+                {
+                    if (!IsWindow(DlgData->hEditBox))
+                    {
+                        ItemEditStarts(hwndDlg, DlgData);
+                    }
+                    break;
+                }
+
+                case LBN_SELCHANGE:
+                {
+                    DlgData->dwSelectedValueIndex = (DWORD)SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCURSEL, 0, 0);
+                    if (IsWindow(DlgData->hEditBox))
+                    {
+                        ItemEditEnds(hwndDlg, DlgData);
+                    }
+                    break;
+                }
+            }
+            
             switch (LOWORD(wParam))
             {
                 case IDOK:
-                    dwNameLength = (DWORD)SendDlgItemMessage(hwndDlg, IDC_VARIABLE_NAME, WM_GETTEXTLENGTH, 0, 0);
-                    dwValueLength = (DWORD)SendDlgItemMessage(hwndDlg, IDC_VARIABLE_VALUE, WM_GETTEXTLENGTH, 0, 0);
-                    if (dwNameLength > 0 && dwValueLength > 0)
+                {
+                    LPTSTR p;
+                    DWORD dwValueLength;
+
+                    if (IsWindow(DlgData->hEditBox))
                     {
-                        LPTSTR p;
-
-                        if (VarData->lpName == NULL)
-                        {
-                            VarData->lpName = GlobalAlloc(GPTR, (dwNameLength + 1) * sizeof(TCHAR));
-                        }
-                        else if (_tcslen(VarData->lpName) < dwNameLength)
-                        {
-                            GlobalFree(VarData->lpName);
-                            VarData->lpName = GlobalAlloc(GPTR, (dwNameLength + 1) * sizeof(TCHAR));
-                        }
-                        SendDlgItemMessage(hwndDlg, IDC_VARIABLE_NAME, WM_GETTEXT, dwNameLength + 1, (LPARAM)VarData->lpName);
-
-                        if (VarData->lpRawValue == NULL)
-                        {
-                            VarData->lpRawValue = GlobalAlloc(GPTR, (dwValueLength + 1) * sizeof(TCHAR));
-                        }
-                        else if (_tcslen(VarData->lpRawValue) < dwValueLength)
-                        {
-                            GlobalFree(VarData->lpRawValue);
-                            VarData->lpRawValue = GlobalAlloc(GPTR, (dwValueLength + 1) * sizeof(TCHAR));
-                        }
-                        SendDlgItemMessage(hwndDlg, IDC_VARIABLE_VALUE, WM_GETTEXT, dwValueLength + 1, (LPARAM)VarData->lpRawValue);
-
-                        if (VarData->lpCookedValue != NULL)
-                        {
-                            GlobalFree(VarData->lpCookedValue);
-                            VarData->lpCookedValue = NULL;
-                        }
-
-                        p = _tcschr(VarData->lpRawValue, _T('%'));
-                        if (p && _tcschr(++p, _T('%')))
-                        {
-                            VarData->dwType = REG_EXPAND_SZ;
-                            VarData->lpCookedValue = GlobalAlloc(GPTR, 2 * MAX_PATH * sizeof(TCHAR));
-
-                            ExpandEnvironmentStrings(VarData->lpRawValue,
-                                                     VarData->lpCookedValue,
-                                                     2 * MAX_PATH);
-                        }
-                        else
-                        {
-                            VarData->dwType = REG_SZ;
-                            VarData->lpCookedValue = GlobalAlloc(GPTR, (dwValueLength + 1) * sizeof(TCHAR));
-                            _tcscpy(VarData->lpCookedValue, VarData->lpRawValue);
-                        }
+                        ItemEditEnds(hwndDlg, DlgData);
                     }
+
+                    /* Either set the values to the list box or to the edit box */
+                    if (DlgData->bIsFriendlyUI)
+                    {
+                        dwValueLength = GatherDataFromListBox(hwndDlg, DlgData->VarData);
+                    }
+                    else
+                    {
+                        dwValueLength = GatherDataFromEditBox(hwndDlg, DlgData->VarData);
+                    }
+
+                    if (dwValueLength == 0)
+                    {
+                        break;
+                    }
+
+                    if (DlgData->VarData->lpCookedValue != NULL)
+                    {
+                        GlobalFree(DlgData->VarData->lpCookedValue);
+                        DlgData->VarData->lpCookedValue = NULL;
+                    }
+
+                    p = _tcschr(DlgData->VarData->lpRawValue, _T('%'));
+                    if (p && _tcschr(++p, _T('%')))
+                    {
+                        DlgData->VarData->dwType = REG_EXPAND_SZ;
+                        DlgData->VarData->lpCookedValue = GlobalAlloc(GPTR, 2 * MAX_PATH * sizeof(TCHAR));
+
+                        ExpandEnvironmentStrings(DlgData->VarData->lpRawValue,
+                                                 DlgData->VarData->lpCookedValue,
+                                                 2 * MAX_PATH);
+                    }
+                    else
+                    {
+                        DlgData->VarData->dwType = REG_SZ;
+                        DlgData->VarData->lpCookedValue = GlobalAlloc(GPTR, (dwValueLength + 1) * sizeof(TCHAR));
+                        _tcscpy(DlgData->VarData->lpCookedValue, DlgData->VarData->lpRawValue);
+                    }
+
                     EndDialog(hwndDlg, 1);
                     return TRUE;
+                }
 
                 case IDCANCEL:
+                    if (IsWindow(DlgData->hEditBox))
+                    {
+                        ItemEditEnds(hwndDlg, DlgData);
+                    }
+
                     EndDialog(hwndDlg, 0);
                     return TRUE;
+
+                case IDC_BUTTON_BROWSE_FILE:
+                {
+                    if (IsWindow(DlgData->hEditBox))
+                    {
+                        ItemEditEnds(hwndDlg, DlgData);
+                    }
+
+                    BrowseRequiredFile(hwndDlg);
+                    break;
+                }
+
+                case IDC_BUTTON_BROWSE_FOLDER:
+                {
+                    if (IsWindow(DlgData->hEditBox))
+                    {
+                        ItemEditEnds(hwndDlg, DlgData);
+                    }
+
+                    BrowseRequiredFolder(hwndDlg, DlgData);
+                    break;
+                }
+
+                case IDC_BUTTON_DELETE:
+                {
+                    if (IsWindow(DlgData->hEditBox))
+                    {
+                        ItemEditEnds(hwndDlg, DlgData);
+                    }
+
+                    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_DELETESTRING, DlgData->dwSelectedValueIndex, 0);
+                    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_SETCURSEL, DlgData->dwSelectedValueIndex, 0);
+                    break;
+                }
+
+                case IDC_BUTTON_MOVE_UP:
+                {
+                    if (IsWindow(DlgData->hEditBox))
+                    {
+                        ItemEditEnds(hwndDlg, DlgData);
+                    }
+
+                    MoveListItem(hwndDlg, DlgData, TRUE);
+                    break;
+                }
+
+                case IDC_BUTTON_MOVE_DOWN:
+                {
+                    if (IsWindow(DlgData->hEditBox))
+                    {
+                        ItemEditEnds(hwndDlg, DlgData);
+                    }
+
+                    MoveListItem(hwndDlg, DlgData, FALSE);
+                    break;
+                }
+                
+                case IDC_BUTTON_EDIT_TEXT:
+                {
+                    TCHAR szStr[128] = _T("");
+                    TCHAR szStr2[98] = _T("");
+
+                    LoadString(hApplet, IDS_EVIRONMENT_WARNING, szStr, sizeof(szStr) / sizeof(WCHAR));
+                    LoadString(hApplet, IDS_EVIRONMENT_WARNING_TITLE, szStr2, sizeof(szStr2) / sizeof(WCHAR));
+                    
+                    if (MessageBox(hwndDlg,
+                                   szStr,
+                                   szStr2,
+                                   MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON1) == IDOK)
+                    {
+                        if (IsWindow(DlgData->hEditBox))
+                        {
+                            ItemEditEnds(hwndDlg, DlgData);
+                        }
+
+                        EndDialog(hwndDlg, -1);
+                    }
+                    break;
+                }
+
+                case IDC_BUTTON_NEW:
+                {
+                    if (IsWindow(DlgData->hEditBox))
+                    {
+                        ItemEditEnds(hwndDlg, DlgData);
+                    }
+
+                    DlgData->dwSelectedValueIndex = SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCOUNT, 0, 0);
+
+                    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_INSERTSTRING, DlgData->dwSelectedValueIndex, (LPARAM)_T(""));
+                    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_SETCURSEL, DlgData->dwSelectedValueIndex, 0);
+                    ItemEditStarts(hwndDlg, DlgData);
+                    break;
+                }
+
+                case IDC_BUTTON_EDIT:
+                {
+                    if (IsWindow(DlgData->hEditBox))
+                    {
+                        ItemEditEnds(hwndDlg, DlgData);
+                    }
+
+                    ItemEditStarts(hwndDlg, DlgData);
+                    break;
+                }
             }
             break;
     }
@@ -345,43 +771,49 @@ OnNewVariable(HWND hwndDlg,
               INT iDlgItem)
 {
     HWND hwndListView;
-    PVARIABLE_DATA VarData;
+    PDIALOG_DATA DlgData;
     LV_ITEM lvi;
     INT iItem;
 
+    DlgData = GlobalAlloc(GPTR, sizeof(DIALOG_DATA));
+
     hwndListView = GetDlgItem(hwndDlg, iDlgItem);
 
-    VarData = GlobalAlloc(GPTR, sizeof(VARIABLE_DATA));
+    DlgData->bIsFriendlyUI = FALSE;
+    DlgData->dwSelectedValueIndex = -1;
+    DlgData->dwTextEditedValueIndex = -1;
+
+    DlgData->VarData = GlobalAlloc(GPTR, sizeof(VARIABLE_DATA));
 
     if (DialogBoxParam(hApplet,
                        MAKEINTRESOURCE(IDD_EDIT_VARIABLE),
                        hwndDlg,
                        EditVariableDlgProc,
-                       (LPARAM)VarData) <= 0)
+                       (LPARAM)DlgData) <= 0)
     {
-        if (VarData->lpName != NULL)
-            GlobalFree(VarData->lpName);
+        if (DlgData->VarData->lpName != NULL)
+            GlobalFree(DlgData->VarData->lpName);
 
-        if (VarData->lpRawValue != NULL)
-            GlobalFree(VarData->lpRawValue);
+        if (DlgData->VarData->lpRawValue != NULL)
+            GlobalFree(DlgData->VarData->lpRawValue);
 
-        if (VarData->lpCookedValue != NULL)
-            GlobalFree(VarData->lpCookedValue);
+        if (DlgData->VarData->lpCookedValue != NULL)
+            GlobalFree(DlgData->VarData->lpCookedValue);
 
-        GlobalFree(VarData);
+        GlobalFree(DlgData);
     }
     else
     {
-        if (VarData->lpName != NULL && (VarData->lpCookedValue || VarData->lpRawValue))
+        if (DlgData->VarData->lpName != NULL && (DlgData->VarData->lpCookedValue || DlgData->VarData->lpRawValue))
         {
             memset(&lvi, 0x00, sizeof(lvi));
             lvi.mask = LVIF_TEXT | LVIF_STATE | LVIF_PARAM;
-            lvi.lParam = (LPARAM)VarData;
-            lvi.pszText = VarData->lpName;
+            lvi.lParam = (LPARAM)DlgData->VarData;
+            lvi.pszText = DlgData->VarData->lpName;
             lvi.state = 0;
             iItem = ListView_InsertItem(hwndListView, &lvi);
 
-            ListView_SetItemText(hwndListView, iItem, 1, VarData->lpCookedValue);
+            ListView_SetItemText(hwndListView, iItem, 1, DlgData->VarData->lpCookedValue);
         }
     }
 }
@@ -392,10 +824,20 @@ OnEditVariable(HWND hwndDlg,
                INT iDlgItem)
 {
     HWND hwndListView;
-    PVARIABLE_DATA VarData;
+    PDIALOG_DATA DlgData;
     LV_ITEM lvi;
     INT iItem;
+    INT DlgID = IDD_EDIT_VARIABLE;
+    INT iRet;
 
+    DlgData = GlobalAlloc(GPTR, sizeof(DIALOG_DATA));
+    
+    DlgData->bIsFriendlyUI = FALSE;
+    DlgData->dwSelectedValueIndex = -1;
+    DlgData->dwTextEditedValueIndex = -1;
+
+    DlgData->VarData = GlobalAlloc(GPTR, sizeof(VARIABLE_DATA));
+    
     hwndListView = GetDlgItem(hwndDlg, iDlgItem);
 
     iItem = GetSelectedListViewItem(hwndListView);
@@ -407,18 +849,41 @@ OnEditVariable(HWND hwndDlg,
 
         if (ListView_GetItem(hwndListView, &lvi))
         {
-            VarData = (PVARIABLE_DATA)lvi.lParam;
+            DlgData->VarData = (PVARIABLE_DATA)lvi.lParam;
 
-            if (DialogBoxParam(hApplet,
-                               MAKEINTRESOURCE(IDD_EDIT_VARIABLE),
-                               hwndDlg,
-                               EditVariableDlgProc,
-                               (LPARAM)VarData) > 0)
+            /* If the value has multiple values and directories then edit value with fancy dialog box */
+            if (wcschr(DlgData->VarData->lpRawValue, ';') != NULL && wcschr(DlgData->VarData->lpRawValue, '\\') != NULL)
             {
-                ListView_SetItemText(hwndListView, iItem, 0, VarData->lpName);
-                ListView_SetItemText(hwndListView, iItem, 1, VarData->lpCookedValue);
+                DlgID = IDD_EDIT_VARIABLE_FANCY;
+                DlgData->bIsFriendlyUI = TRUE;
+            }
+
+            iRet = DialogBoxParam(hApplet,
+                                  MAKEINTRESOURCE(DlgID),
+                                  hwndDlg,
+                                  EditVariableDlgProc,
+                                  (LPARAM)DlgData);
+
+            /* If iRet is less than 0 edit the value and name normally */
+            if (iRet < 0)
+            {
+                DlgID = IDD_EDIT_VARIABLE;
+                DlgData->bIsFriendlyUI = FALSE;
+                iRet = DialogBoxParam(hApplet,
+                                      MAKEINTRESOURCE(DlgID),
+                                      hwndDlg,
+                                      EditVariableDlgProc,
+                                      (LPARAM)DlgData);
+            }
+            
+            if (iRet > 0)
+            {
+                ListView_SetItemText(hwndListView, iItem, 0, DlgData->VarData->lpName);
+                ListView_SetItemText(hwndListView, iItem, 1, DlgData->VarData->lpCookedValue);
             }
         }
+
+        GlobalFree(DlgData);
     }
 }
 
