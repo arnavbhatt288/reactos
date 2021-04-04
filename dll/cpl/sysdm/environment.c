@@ -326,7 +326,7 @@ MoveListItem(HWND hwndDlg,
     TCHAR szDest[MAX_PATH];
     DWORD dwSrcIndex, dwDestIndex, dwLastIndex;
     
-    dwLastIndex = SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCOUNT, 0, 0) - 1;
+    dwLastIndex = (DWORD)SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCOUNT, 0, 0) - 1;
     dwSrcIndex = DlgData->dwSelectedValueIndex;
     dwDestIndex = bMoveUp ? (dwSrcIndex - 1) : (dwSrcIndex + 1);
     
@@ -430,12 +430,6 @@ EditVariableDlgProc(HWND hwndDlg,
                     DlgData->dwSelectedValueIndex = (DWORD)SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCURSEL, 0, 0);
                     break;
                 }
-
-                case EN_KILLFOCUS:
-                {
-                    ItemEditEnds(hwndDlg, DlgData);
-                    break;
-                }
             }
             
             switch (LOWORD(wParam))
@@ -506,7 +500,7 @@ EditVariableDlgProc(HWND hwndDlg,
                 case IDC_BUTTON_DELETE:
                 {
                     DWORD dwLastIndex;
-                    dwLastIndex = SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCOUNT, 0, 0) - 1;
+                    dwLastIndex = (DWORD)SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCOUNT, 0, 0) - 1;
                     SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_DELETESTRING, DlgData->dwSelectedValueIndex, 0);
 
                     if (dwLastIndex == DlgData->dwSelectedValueIndex)
