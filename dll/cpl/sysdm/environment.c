@@ -27,7 +27,6 @@ typedef struct _DIALOG_DATA
     DWORD dwSelectedValueIndex;
     DWORD dwTextEditedValueIndex;
     HWND hEditBox;
-    WNDPROC OldListBoxProc;
     PVARIABLE_DATA VarData;
 } DIALOG_DATA, *PDIALOG_DATA;
 
@@ -105,14 +104,14 @@ GatherDataFromListBox(HWND hwndDlg,
         VarData->lpRawValue = GlobalAlloc(GPTR, (dwValueLength + 1) * sizeof(TCHAR));
     }
 
-    /* Copy the first value */
-    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETTEXT, 0, (LPARAM)szData);
-    StringCchCopy(VarData->lpRawValue, dwValueLength + 1, szData);
 
-    /* After doing so, copy rest of the values while seperating them with a semi-colon except for the last value */
-    for (i = 1; NumberOfItems > i; i++)
+    /* Copy the variable values while seperating them with a semi-colon except for the last value */
+    for (i = 0; NumberOfItems > i; i++)
     {
-        StringCchCat(VarData->lpRawValue, dwValueLength + 1, _T(";"));
+        if (i > 0)
+        {
+            StringCchCat(VarData->lpRawValue, dwValueLength + 1, _T(";"));
+        }
         SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETTEXT, i, (LPARAM)szData);
         StringCchCat(VarData->lpRawValue, dwValueLength + 1, szData);
     }
@@ -340,15 +339,17 @@ MoveListItem(HWND hwndDlg,
     }
 }
 
-static INT_PTR CALLBACK
+static LRESULT CALLBACK
 ListBoxSubclassProc(HWND hListBox,
-                 UINT uMsg,
-                 WPARAM wParam,
-                 LPARAM lParam)
+                    UINT uMsg,
+                    WPARAM wParam,
+                    LPARAM lParam,
+                    UINT_PTR uIdSubclass,
+                    DWORD_PTR dwRefData)
 {
     PDIALOG_DATA DlgData;
-    
-    DlgData = (PDIALOG_DATA)GetWindowLongPtr(hListBox, GWLP_USERDATA);
+
+    DlgData = (PDIALOG_DATA)dwRefData;
     
     switch (uMsg)
     {
@@ -360,9 +361,15 @@ ListBoxSubclassProc(HWND hListBox,
             }
             break;
         }
+
+        case WM_DESTROY:
+        {
+            RemoveWindowSubclass(hListBox, ListBoxSubclassProc, uIdSubclass);
+            break;
+        }
     }
     
-    return CallWindowProc(DlgData->OldListBoxProc, hListBox, uMsg, wParam, lParam);
+    return DefSubclassProc(hListBox, uMsg, wParam, lParam);
 }
 
 static INT_PTR CALLBACK
@@ -385,9 +392,8 @@ EditVariableDlgProc(HWND hwndDlg,
             if (DlgData->bIsFriendlyUI)
             {
                 /* Subclass the list box control first */
-                DlgData->OldListBoxProc = (WNDPROC)GetWindowLongPtr(GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE), GWLP_WNDPROC);
-                SetWindowLongPtr(GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE), GWLP_USERDATA, (LONG_PTR)DlgData);
-                SetWindowLongPtr(GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE), GWLP_WNDPROC, (LONG_PTR)ListBoxSubclassProc);
+                SetWindowSubclass(GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE), ListBoxSubclassProc, 1, (DWORD_PTR)DlgData);
+
                 if (DlgData->VarData->lpRawValue != NULL)
                 {
                     AddValuesToListBox(hwndDlg, DlgData);
@@ -406,12 +412,6 @@ EditVariableDlgProc(HWND hwndDlg,
                 }
             }
             break;
-
-        case WM_DESTROY:
-        {
-            SetWindowLongPtr(GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE), GWLP_WNDPROC, (LONG_PTR)DlgData->OldListBoxProc);
-            break;
-        }
         
         case WM_COMMAND:
             switch (HIWORD(wParam))
