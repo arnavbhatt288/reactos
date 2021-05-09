@@ -147,6 +147,7 @@
 #define IDC_BUTTON_MOVE_UP       710
 #define IDC_BUTTON_MOVE_DOWN     711
 #define IDC_BUTTON_EDIT_TEXT     712
+#define IDC_DIALOG_GRIP          713
 
 /* Virtual memory */
 #define IDD_VIRTMEM      900
