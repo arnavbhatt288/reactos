@@ -14,7 +14,7 @@
 #include <string.h>
 #include <strsafe.h>
 
-#define CX_LIST 30160  // Make columns ridiculously long 
+#define CX_LIST 30160  // Make columns ridiculously long in order to avoid resizing it
 
 typedef struct _VARIABLE_DATA
 {
@@ -28,7 +28,6 @@ typedef struct _DIALOG_DATA
 {
     BOOL bIsFriendlyUI;
     DWORD dwSelectedValueIndex;
-    DWORD dwTextEditedValueIndex;
     DWORD cxMin;
     DWORD cyMin;
     DWORD cxOld;
@@ -178,6 +177,7 @@ ListViewSubclassProc(HWND hListBox,
             break;
         }
 
+        /* Whenever the control is resized make sure it doesn't spawn the horizontal scrollbar */
         case WM_SIZE:
         {
             ShowScrollBar(hListBox, SB_HORZ, FALSE);
@@ -384,6 +384,7 @@ OnSize(HWND hwndDlg, PDIALOG_DATA DlgData, DWORD cx, DWORD cy)
 
         GetWindowRect(hwndDlg, &rect);
 
+        /* For list view control */
         hItemWnd = GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE);
         GetWindowRect(hItemWnd, &rect);
         MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
@@ -408,6 +409,7 @@ OnSize(HWND hwndDlg, PDIALOG_DATA DlgData, DWORD cx, DWORD cy)
                                    SWP_NOZORDER | SWP_NOACTIVATE);
         }
 
+        /* For buttons */
         hItemWnd = GetDlgItem(hwndDlg, IDC_BUTTON_BROWSE_FOLDER);
         GetWindowRect(hItemWnd, &rect);
         MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
@@ -543,6 +545,7 @@ OnSize(HWND hwndDlg, PDIALOG_DATA DlgData, DWORD cx, DWORD cy)
                                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
 
+        /* For the size grip */
         hItemWnd = GetDlgItem(hwndDlg, IDC_DIALOG_GRIP);
         GetWindowRect(hItemWnd, &rect);
         MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
@@ -697,7 +700,9 @@ EditVariableDlgProc(HWND hwndDlg,
             /* Either get the values from list box or from edit box */
             if (DlgData->bIsFriendlyUI)
             {
+                /* Subclass the listview control first */
                 SetWindowSubclass(hwndListView, ListViewSubclassProc, 1, 0);
+
                 if (DlgData->VarData->lpRawValue != NULL)
                 {
                     AddValuesToList(hwndDlg, DlgData);
@@ -1088,7 +1093,6 @@ OnNewVariable(HWND hwndDlg,
 
     DlgData->bIsFriendlyUI = FALSE;
     DlgData->dwSelectedValueIndex = -1;
-    DlgData->dwTextEditedValueIndex = -1;
 
     DlgData->VarData = GlobalAlloc(GPTR, sizeof(VARIABLE_DATA));
 
@@ -1141,7 +1145,6 @@ OnEditVariable(HWND hwndDlg,
     
     DlgData->bIsFriendlyUI = FALSE;
     DlgData->dwSelectedValueIndex = -1;
-    DlgData->dwTextEditedValueIndex = -1;
     
     hwndListView = GetDlgItem(hwndDlg, iDlgItem);
 
