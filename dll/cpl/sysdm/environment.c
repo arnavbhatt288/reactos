@@ -10,8 +10,11 @@
 
 #include "precomp.h"
 #include <commdlg.h>
+#include "commctrl.h"
 #include <string.h>
 #include <strsafe.h>
+
+#define CX_LIST 30160  // Make columns ridiculously long 
 
 typedef struct _VARIABLE_DATA
 {
@@ -26,6 +29,10 @@ typedef struct _DIALOG_DATA
     BOOL bIsFriendlyUI;
     DWORD dwSelectedValueIndex;
     DWORD dwTextEditedValueIndex;
+    DWORD cxMin;
+    DWORD cyMin;
+    DWORD cxOld;
+    DWORD cyOld;
     HWND hEditBox;
     PVARIABLE_DATA VarData;
 } DIALOG_DATA, *PDIALOG_DATA;
@@ -70,7 +77,7 @@ GatherDataFromEditBox(HWND hwndDlg,
 }
 
 static DWORD
-GatherDataFromListBox(HWND hwndDlg,
+GatherDataFromListView(HWND hwndListView,
                       PVARIABLE_DATA VarData)
 {
     DWORD dwValueLength;
@@ -79,7 +86,7 @@ GatherDataFromListBox(HWND hwndDlg,
     TCHAR szData[MAX_PATH];
 
     /* Gather the number of items for the semi-colon */
-    NumberOfItems = (DWORD)SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCOUNT, 0, 0);
+    NumberOfItems = (DWORD)ListView_GetItemCount(hwndListView);
 
     if (NumberOfItems == 0)
     {
@@ -91,7 +98,12 @@ GatherDataFromListBox(HWND hwndDlg,
 
     for (i = 0; NumberOfItems > i; i++)
     {
-        dwValueLength += SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETTEXTLEN, i, 0);
+        ListView_GetItemText(hwndListView,
+                             i,
+                             0,
+                             szData,
+                             MAX_PATH);
+        dwValueLength += _tcslen(szData);
     }
 
     if (VarData->lpRawValue == NULL)
@@ -112,7 +124,11 @@ GatherDataFromListBox(HWND hwndDlg,
         {
             StringCchCat(VarData->lpRawValue, dwValueLength + 1, _T(";"));
         }
-        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETTEXT, i, (LPARAM)szData);
+        ListView_GetItemText(hwndListView,
+                             i,
+                             0,
+                             szData,
+                             MAX_PATH);
         StringCchCat(VarData->lpRawValue, dwValueLength + 1, szData);
     }
     
@@ -146,27 +162,87 @@ GetSelectedListViewItem(HWND hwndListView)
     return -1;
 }
 
+static LRESULT CALLBACK
+ListViewSubclassProc(HWND hListBox,
+                    UINT uMsg,
+                    WPARAM wParam,
+                    LPARAM lParam,
+                    UINT_PTR uIdSubclass,
+                    DWORD_PTR dwRefData)
+{
+    switch (uMsg)
+    {
+        case WM_DESTROY:
+        {
+            RemoveWindowSubclass(hListBox, ListViewSubclassProc, uIdSubclass);
+            break;
+        }
+
+        case WM_SIZE:
+        {
+            ShowScrollBar(hListBox, SB_HORZ, FALSE);
+            break;
+        }
+    }
+
+    return DefSubclassProc(hListBox, uMsg, wParam, lParam);
+}
+
 static VOID
-AddValuesToListBox(HWND hwndDlg,
+AddValuesToList(HWND hwndDlg,
                    PDIALOG_DATA DlgData)
 {
+    LV_COLUMN column;
+    LV_ITEM lvi;
+    RECT rItem;
+
     DWORD dwValueLength;
+    DWORD i;
+    HWND hwndListView;
     LPTSTR lpTemp;
     LPTSTR lpToken;
 
+    memset(&column, 0x00, sizeof(column));
+    memset(&lvi, 0x00, sizeof(lvi));
+
+    hwndListView = GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE);
+
+    GetClientRect(hwndListView, &rItem);
+    
+    column.mask = LVCF_WIDTH;
+    column.cx = CX_LIST;
+    ListView_InsertColumn(hwndListView, 0, &column);
+    ShowScrollBar(hwndListView, SB_HORZ, FALSE);
+
+    lvi.mask = LVIF_TEXT | LVIF_STATE;
+    lvi.cchTextMax = MAX_PATH;
+    lvi.iSubItem = 0;
+    
     dwValueLength = wcslen(DlgData->VarData->lpRawValue) + 1;
     lpTemp = GlobalAlloc(GPTR, dwValueLength * sizeof(TCHAR));
     
     StringCchCopy(lpTemp, dwValueLength, DlgData->VarData->lpRawValue);
     lpToken = wcstok(lpTemp, _T(";"));
 
+    i = 0;
+
     while (lpToken != NULL)
     {
-        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_ADDSTRING, 0, (LPARAM)lpToken);
+        lvi.iItem = i;
+        lvi.pszText = lpToken;
+        lvi.state = (i == 0) ? LVIS_SELECTED : 0;
+        ListView_InsertItem(hwndListView, &lvi);
         lpToken = wcstok(NULL, _T(";"));
+        i++;
     }
-    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_SETCURSEL, 0, 0);
+
     DlgData->dwSelectedValueIndex = 0;
+    ListView_SetExtendedListViewStyle(hwndListView, LVS_EX_GRIDLINES | LVS_EX_FULLROWSELECT);
+    ListView_SetItemState(hwndListView, DlgData->dwSelectedValueIndex,
+                          LVIS_FOCUSED | LVIS_SELECTED,
+                          LVIS_FOCUSED | LVIS_SELECTED);
+
+    ListView_Update(hwndListView, DlgData->dwSelectedValueIndex);
     GlobalFree(lpTemp);
 }
 
@@ -193,7 +269,7 @@ BrowseRequiredFile(HWND hwndDlg)
 
 static VOID
 BrowseRequiredFolder(HWND hwndDlg,
-                    PDIALOG_DATA DlgData)
+                     PDIALOG_DATA DlgData)
 {
     BROWSEINFO bi;
     LPITEMIDLIST pidllist;
@@ -239,137 +315,363 @@ BrowseRequiredFolder(HWND hwndDlg,
 }
 
 static VOID
-ItemEditStarts(HWND hwndDlg,
-               PDIALOG_DATA DlgData)
-{
-    RECT rItem;
-    HFONT hFont = NULL;
-    TCHAR szStr[MAX_PATH] = _T("");
-
-    /* Get item rect */
-    SendDlgItemMessage(hwndDlg,
-                       IDC_LIST_VARIABLE_VALUE,
-                       LB_GETITEMRECT,
-                       DlgData->dwSelectedValueIndex,
-                       (LPARAM)&rItem);
-
-    /* Get string from item */
-    SendDlgItemMessage(hwndDlg,
-                       IDC_LIST_VARIABLE_VALUE,
-                       LB_GETTEXT,
-                       DlgData->dwSelectedValueIndex,
-                       (LPARAM)szStr);
-
-    DlgData->hEditBox = CreateWindow(_T("EDIT"),
-                                     szStr,
-                                     WS_VISIBLE | WS_CHILD | WS_BORDER |
-                                     ES_LEFT | ES_AUTOHSCROLL,
-                                     rItem.left, rItem.top,
-                                     rItem.right, rItem.bottom - rItem.top,
-                                     GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE),
-                                     NULL,
-                                     hApplet,
-                                     NULL);
-
-    hFont = (HFONT)SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, WM_GETFONT, 0, 0);
-    SendMessage(DlgData->hEditBox, WM_SETFONT, (WPARAM)hFont, TRUE);
-    SendMessage(DlgData->hEditBox, EM_SETSEL, 0, -1);
-    SetFocus(DlgData->hEditBox);
-    DlgData->dwTextEditedValueIndex = DlgData->dwSelectedValueIndex;
-}
-
-static VOID
-ItemEditEnds(HWND hwndDlg,
-             PDIALOG_DATA DlgData)
-{
-    TCHAR szStr[MAX_PATH] = _T("");
-    TCHAR szStr2[MAX_PATH] = _T("");
-
-    SendMessage(DlgData->hEditBox, WM_GETTEXT, MAX_PATH, (LPARAM)szStr);
-    SendDlgItemMessage(hwndDlg,
-                       IDC_LIST_VARIABLE_VALUE,
-                       LB_GETTEXT,
-                       DlgData->dwTextEditedValueIndex,
-                       (LPARAM)szStr2);
-    SendDlgItemMessage(hwndDlg,
-                       IDC_LIST_VARIABLE_VALUE,
-                       LB_DELETESTRING,
-                       DlgData->dwTextEditedValueIndex, 0);
-
-    if (*szStr || _tcscmp(szStr, szStr2) != 0)
-    {
-        SendDlgItemMessage(hwndDlg,
-                           IDC_LIST_VARIABLE_VALUE,
-                           LB_INSERTSTRING,
-                           DlgData->dwTextEditedValueIndex, (LPARAM)szStr);
-    }
-    else
-    {
-        SendDlgItemMessage(hwndDlg,
-                           IDC_LIST_VARIABLE_VALUE,
-                           LB_SETCURSEL,
-                           DlgData->dwTextEditedValueIndex - 1, 0);
-
-        DlgData->dwSelectedValueIndex = DlgData->dwTextEditedValueIndex - 1;
-    }
-
-    DestroyWindow(DlgData->hEditBox);
-    DlgData->dwTextEditedValueIndex = -1;
-}
-
-static VOID
 MoveListItem(HWND hwndDlg,
              PDIALOG_DATA DlgData,
              BOOL bMoveUp)
 {
     TCHAR szDest[MAX_PATH];
+    TCHAR szSource[MAX_PATH];
+    HWND hwndListView;
     DWORD dwSrcIndex, dwDestIndex, dwLastIndex;
     
-    dwLastIndex = (DWORD)SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCOUNT, 0, 0) - 1;
+    hwndListView = GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE);
+
+    dwLastIndex = (DWORD)ListView_GetItemCount(hwndListView) - 1;
     dwSrcIndex = DlgData->dwSelectedValueIndex;
     dwDestIndex = bMoveUp ? (dwSrcIndex - 1) : (dwSrcIndex + 1);
     
     if ((bMoveUp && dwSrcIndex > 0) || (!bMoveUp && dwSrcIndex < dwLastIndex))
     {
-        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETTEXT, dwSrcIndex, (LPARAM)szDest);
-        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_DELETESTRING, dwSrcIndex, 0);
-        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_INSERTSTRING, dwDestIndex, (LPARAM)szDest);
+        ListView_GetItemText(hwndListView,
+                             dwSrcIndex,
+                             0,
+                             szDest,
+                             MAX_PATH);
+        ListView_GetItemText(hwndListView,
+                             dwDestIndex,
+                             0,
+                             szSource,
+                             MAX_PATH);
+
+        ListView_SetItemText(hwndListView,
+                             dwDestIndex,
+                             0,
+                             szDest);
+        ListView_SetItemText(hwndListView,
+                             dwSrcIndex,
+                             0,
+                             szSource);
+
         DlgData->dwSelectedValueIndex = dwDestIndex;
-        SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_SETCURSEL, DlgData->dwSelectedValueIndex, 0);
+        ListView_SetItemState(hwndListView, DlgData->dwSelectedValueIndex,
+                              LVIS_FOCUSED | LVIS_SELECTED,
+                              LVIS_FOCUSED | LVIS_SELECTED);
     }
 }
 
-static LRESULT CALLBACK
-ListBoxSubclassProc(HWND hListBox,
-                    UINT uMsg,
-                    WPARAM wParam,
-                    LPARAM lParam,
-                    UINT_PTR uIdSubclass,
-                    DWORD_PTR dwRefData)
+static VOID
+OnSize(HWND hwndDlg, PDIALOG_DATA DlgData, DWORD cx, DWORD cy)
 {
-    PDIALOG_DATA DlgData;
+    RECT rect;
+    HDWP hdwp;
+    HWND hItemWnd;
+    DWORD y;
 
-    DlgData = (PDIALOG_DATA)dwRefData;
-    
-    switch (uMsg)
+    y = 0;
+
+    if (cx < DlgData->cxMin)
     {
-        case WM_COMMAND:
+        cx = DlgData->cxMin;
+    }
+    if (cy < DlgData->cyMin)
+    {
+        cy = DlgData->cyMin;
+    }
+
+    if ((cx != DlgData->cxOld) || (cy != DlgData->cyOld))
+    {
+        hdwp = BeginDeferWindowPos(10);
+
+        GetWindowRect(hwndDlg, &rect);
+
+        hItemWnd = GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE);
+        GetWindowRect(hItemWnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
+
+        if (cy >= DlgData->cyOld)
         {
-            if (HIWORD(wParam) == EN_KILLFOCUS && (HWND)lParam == DlgData->hEditBox)
+            y += (cy - DlgData->cyOld) / 2 + (cy - DlgData->cyOld) % 2;
+        }
+        else
+        {
+            y -= (DlgData->cyOld - cy) / 2 + (DlgData->cyOld - cy) % 2;
+        }
+
+        if (hdwp)
+        {
+            hdwp = DeferWindowPos(hdwp,
+                                  hItemWnd,
+                                  0,
+                                  rect.left, rect.top,
+                                  (rect.right - rect.left) + (cx - DlgData->cxOld),
+                                  (rect.bottom - rect.top) + y,
+                                   SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        hItemWnd = GetDlgItem(hwndDlg, IDC_BUTTON_BROWSE_FOLDER);
+        GetWindowRect(hItemWnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
+
+        if (hdwp)
+        {
+            hdwp = DeferWindowPos(hdwp,
+                                  hItemWnd,
+                                  0,
+                                  rect.left + (cx - DlgData->cxOld),
+                                  rect.top,
+                                  0, 0,
+                                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        hItemWnd = GetDlgItem(hwndDlg, IDC_BUTTON_NEW);
+        GetWindowRect(hItemWnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
+
+        if (hdwp)
+        {
+            hdwp = DeferWindowPos(hdwp,
+                                  hItemWnd,
+                                  0,
+                                  rect.left + (cx - DlgData->cxOld),
+                                  rect.top,
+                                  0, 0,
+                                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        hItemWnd = GetDlgItem(hwndDlg, IDC_BUTTON_EDIT);
+        GetWindowRect(hItemWnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
+
+        if (hdwp)
+        {
+            hdwp = DeferWindowPos(hdwp,
+                                  hItemWnd,
+                                  0,
+                                  rect.left + (cx - DlgData->cxOld),
+                                  rect.top,
+                                  0, 0,
+                                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        hItemWnd = GetDlgItem(hwndDlg, IDC_BUTTON_DELETE);
+        GetWindowRect(hItemWnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
+
+        if (hdwp)
+        {
+            hdwp = DeferWindowPos(hdwp,
+                                  hItemWnd,
+                                  0,
+                                  rect.left + (cx - DlgData->cxOld),
+                                  rect.top,
+                                  0, 0,
+                                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        hItemWnd = GetDlgItem(hwndDlg, IDC_BUTTON_MOVE_UP);
+        GetWindowRect(hItemWnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
+
+        if (hdwp)
+        {
+            hdwp = DeferWindowPos(hdwp,
+                                  hItemWnd,
+                                  0,
+                                  rect.left + (cx - DlgData->cxOld),
+                                  rect.top,
+                                  0, 0,
+                                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        hItemWnd = GetDlgItem(hwndDlg, IDC_BUTTON_MOVE_DOWN);
+        GetWindowRect(hItemWnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
+
+        if (hdwp)
+        {
+            hdwp = DeferWindowPos(hdwp,
+                                  hItemWnd,
+                                  0,
+                                  rect.left + (cx - DlgData->cxOld),
+                                  rect.top,
+                                  0, 0,
+                                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        hItemWnd = GetDlgItem(hwndDlg, IDC_BUTTON_EDIT_TEXT);
+        GetWindowRect(hItemWnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
+
+        if (hdwp)
+        {
+            hdwp = DeferWindowPos(hdwp,
+                                  hItemWnd,
+                                  0,
+                                  rect.left + (cx - DlgData->cxOld),
+                                  rect.top,
+                                  0, 0,
+                                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        hItemWnd = GetDlgItem(hwndDlg, IDOK);
+        GetWindowRect(hItemWnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
+
+        if (hdwp)
+        {
+            hdwp = DeferWindowPos(hdwp,
+                                  hItemWnd,
+                                  0,
+                                  rect.left + (cx - DlgData->cxOld),
+                                  rect.top + (cy - DlgData->cyOld),
+                                  0, 0,
+                                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        hItemWnd = GetDlgItem(hwndDlg, IDCANCEL);
+        GetWindowRect(hItemWnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
+
+        if (hdwp)
+        {
+            hdwp = DeferWindowPos(hdwp,
+                                  hItemWnd,
+                                  0,
+                                  rect.left + (cx - DlgData->cxOld),
+                                  rect.top + (cy - DlgData->cyOld),
+                                  0, 0,
+                                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        hItemWnd = GetDlgItem(hwndDlg, IDC_DIALOG_GRIP);
+        GetWindowRect(hItemWnd, &rect);
+        MapWindowPoints(HWND_DESKTOP, hwndDlg, (LPPOINT)&rect, sizeof(RECT)/sizeof(POINT));
+
+        if (hdwp)
+        {
+            hdwp = DeferWindowPos(hdwp,
+                                  hItemWnd,
+                                  0,
+                                  rect.left + (cx - DlgData->cxOld),
+                                  rect.top + (cy - DlgData->cyOld),
+                                  0, 0,
+                                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        if (hdwp)
+        {
+            EndDeferWindowPos(hdwp);
+        }
+
+        DlgData->cxOld = cx;
+        DlgData->cyOld = cy;
+    }
+}
+
+static BOOL
+OnBeginLabelEdit(NMLVDISPINFO* pnmv)
+{
+    HWND hwndEdit;
+
+    hwndEdit = ListView_GetEditControl(pnmv->hdr.hwndFrom);
+    if (hwndEdit == NULL)
+    {
+        return TRUE;
+    }
+
+    SendMessage(hwndEdit, EM_SETLIMITTEXT, MAX_PATH, 0);
+
+    return FALSE;
+}
+
+static BOOL
+OnEndLabelEdit(NMLVDISPINFO* pnmv)
+{
+    TCHAR szOldDir[MAX_PATH];
+    TCHAR szNewDir[MAX_PATH];
+
+    /* Leave, if there is no valid listview item */
+    if (pnmv->item.iItem == -1)
+    {
+        return FALSE;
+    }
+
+    /* Get the new user name */
+    ListView_GetItemText(pnmv->hdr.hwndFrom,
+                         pnmv->item.iItem, 0,
+                         szOldDir,
+                         MAX_PATH);
+
+    /* Delete the item, if there is no text */
+    if (pnmv->item.pszText == NULL)
+    {
+        ListView_DeleteItem(pnmv->hdr.hwndFrom, pnmv->item.iItem);
+        ListView_SetItemState(pnmv->hdr.hwndFrom, pnmv->item.iItem - 1,
+                              LVIS_FOCUSED | LVIS_SELECTED,
+                              LVIS_FOCUSED | LVIS_SELECTED);
+        return FALSE;
+    }
+
+    /* Get the new user name */
+    _tcscpy(szNewDir, pnmv->item.pszText);
+
+    /* Leave, if the user name was not changed */
+    if (_tcscmp(szOldDir, szNewDir) == 0)
+    {
+        return FALSE;
+    }
+
+    /* Update the listview item */
+    ListView_SetItemText(pnmv->hdr.hwndFrom,
+                         pnmv->item.iItem, 0,
+                         szNewDir);
+
+    return TRUE;
+}
+
+static BOOL
+OnNotifyEditVariableDlg(HWND hwndDlg, PDIALOG_DATA DlgData, NMHDR *phdr)
+{
+    LPNMLISTVIEW lpnmlv = (LPNMLISTVIEW)phdr;
+
+    switch (phdr->idFrom)
+    {
+        case IDC_LIST_VARIABLE_VALUE:
+            switch(phdr->code)
             {
-                ItemEditEnds(GetParent(hListBox), DlgData);
+                case NM_CLICK:
+                {
+                    DlgData->dwSelectedValueIndex = lpnmlv->iItem;
+                    break;
+                }
+
+                case NM_DBLCLK:
+                {
+                    if (lpnmlv->iItem == -1)
+                    {
+                        SendMessage(GetDlgItem(hwndDlg, IDC_BUTTON_NEW), BM_CLICK, 0, 0);
+                    }
+                    else
+                    {
+                        ListView_EditLabel(GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE), DlgData->dwSelectedValueIndex);
+                    }
+                    break;
+                }
+
+                case LVN_BEGINLABELEDIT:
+                {
+                    return OnBeginLabelEdit((NMLVDISPINFO*)phdr);
+                }
+
+                case LVN_ENDLABELEDIT:
+                {
+                    return OnEndLabelEdit((NMLVDISPINFO*)phdr);
+                }
             }
             break;
-        }
-
-        case WM_DESTROY:
-        {
-            RemoveWindowSubclass(hListBox, ListBoxSubclassProc, uIdSubclass);
-            break;
-        }
     }
-    
-    return DefSubclassProc(hListBox, uMsg, wParam, lParam);
+
+    return FALSE;
 }
 
 static INT_PTR CALLBACK
@@ -379,24 +681,26 @@ EditVariableDlgProc(HWND hwndDlg,
                     LPARAM lParam)
 {
     PDIALOG_DATA DlgData;
+    HWND hwndListView;
 
     DlgData = (PDIALOG_DATA)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
-
+    hwndListView = GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE);
     switch (uMsg)
     {
         case WM_INITDIALOG:
+        {
+            RECT rect;
+
             SetWindowLongPtr(hwndDlg, GWLP_USERDATA, (LONG_PTR)lParam);
             DlgData = (PDIALOG_DATA)lParam;
 
             /* Either get the values from list box or from edit box */
             if (DlgData->bIsFriendlyUI)
             {
-                /* Subclass the list box control first */
-                SetWindowSubclass(GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE), ListBoxSubclassProc, 1, (DWORD_PTR)DlgData);
-
+                SetWindowSubclass(hwndListView, ListViewSubclassProc, 1, 0);
                 if (DlgData->VarData->lpRawValue != NULL)
                 {
-                    AddValuesToListBox(hwndDlg, DlgData);
+                    AddValuesToList(hwndDlg, DlgData);
                 }
             }
             else
@@ -411,27 +715,25 @@ EditVariableDlgProc(HWND hwndDlg,
                     SendDlgItemMessage(hwndDlg, IDC_VARIABLE_VALUE, WM_SETTEXT, 0, (LPARAM)DlgData->VarData->lpRawValue);
                 }
             }
-            break;
-        
-        case WM_COMMAND:
-            switch (HIWORD(wParam))
-            {   
-                case LBN_DBLCLK:
-                {
-                    if (!IsWindow(DlgData->hEditBox))
-                    {
-                        ItemEditStarts(hwndDlg, DlgData);
-                    }
-                    break;
-                }
 
-                case LBN_SELCHANGE:
-                {
-                    DlgData->dwSelectedValueIndex = (DWORD)SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCURSEL, 0, 0);
-                    break;
-                }
-            }
-            
+            GetClientRect(hwndDlg, &rect);
+            DlgData->cxMin = DlgData->cxOld = rect.right - rect.left;
+            DlgData->cyMin = DlgData->cyOld = rect.bottom - rect.top;
+            break;
+        }
+        
+        case WM_SIZE:
+        {
+            OnSize(hwndDlg, DlgData, LOWORD(lParam), HIWORD(lParam));
+            break;
+        }
+        
+        case WM_NOTIFY:
+        {
+            return OnNotifyEditVariableDlg(hwndDlg, DlgData, (NMHDR*)lParam);
+        }
+
+        case WM_COMMAND:
             switch (LOWORD(wParam))
             {
                 case IDOK:
@@ -442,7 +744,7 @@ EditVariableDlgProc(HWND hwndDlg,
                     /* Either set the values to the list box or to the edit box */
                     if (DlgData->bIsFriendlyUI)
                     {
-                        dwValueLength = GatherDataFromListBox(hwndDlg, DlgData->VarData);
+                        dwValueLength = GatherDataFromListView(hwndListView, DlgData->VarData);
                     }
                     else
                     {
@@ -500,15 +802,17 @@ EditVariableDlgProc(HWND hwndDlg,
                 case IDC_BUTTON_DELETE:
                 {
                     DWORD dwLastIndex;
-                    dwLastIndex = (DWORD)SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCOUNT, 0, 0) - 1;
-                    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_DELETESTRING, DlgData->dwSelectedValueIndex, 0);
+                    dwLastIndex = (DWORD)ListView_GetItemCount(hwndListView) - 1;
+                    ListView_DeleteItem(hwndListView, DlgData->dwSelectedValueIndex);
 
                     if (dwLastIndex == DlgData->dwSelectedValueIndex)
                     {
                         DlgData->dwSelectedValueIndex--;
                     }
 
-                    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_SETCURSEL, DlgData->dwSelectedValueIndex, 0);
+                    ListView_SetItemState(hwndListView, DlgData->dwSelectedValueIndex,
+                                          LVIS_FOCUSED | LVIS_SELECTED,
+                                          LVIS_FOCUSED | LVIS_SELECTED);
                     break;
                 }
 
@@ -544,17 +848,25 @@ EditVariableDlgProc(HWND hwndDlg,
 
                 case IDC_BUTTON_NEW:
                 {
-                    DlgData->dwSelectedValueIndex = SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_GETCOUNT, 0, 0);
+                    LV_ITEM lvi;
+                    
+                    DlgData->dwSelectedValueIndex = (DWORD)ListView_GetItemCount(hwndListView);
 
-                    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_INSERTSTRING, DlgData->dwSelectedValueIndex, (LPARAM)_T(""));
-                    SendDlgItemMessage(hwndDlg, IDC_LIST_VARIABLE_VALUE, LB_SETCURSEL, DlgData->dwSelectedValueIndex, 0);
-                    ItemEditStarts(hwndDlg, DlgData);
+                    memset(&lvi, 0x00, sizeof(lvi));
+                    lvi.mask = LVIF_TEXT | LVIF_STATE;
+                    lvi.cchTextMax = MAX_PATH;
+                    lvi.pszText = _T("");
+                    lvi.iItem = DlgData->dwSelectedValueIndex;
+                    lvi.iSubItem = 0;
+                    ListView_InsertItem(hwndListView, &lvi);
+
+                    ListView_EditLabel(hwndListView, DlgData->dwSelectedValueIndex);
                     break;
                 }
 
                 case IDC_BUTTON_EDIT:
                 {
-                    ItemEditStarts(hwndDlg, DlgData);
+                    ListView_EditLabel(hwndListView, DlgData->dwSelectedValueIndex);
                     break;
                 }
             }
