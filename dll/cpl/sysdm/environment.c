@@ -46,8 +46,8 @@ GatherDataFromEditBox(HWND hwndDlg,
     DWORD dwNameLength;
     DWORD dwValueLength;
 
-    dwNameLength = (DWORD)SendDlgItemMessage(hwndDlg, IDC_VARIABLE_NAME, WM_GETTEXTLENGTH, 0, 0);
-    dwValueLength = (DWORD)SendDlgItemMessage(hwndDlg, IDC_VARIABLE_VALUE, WM_GETTEXTLENGTH, 0, 0);
+    dwNameLength = SendDlgItemMessage(hwndDlg, IDC_VARIABLE_NAME, WM_GETTEXTLENGTH, 0, 0);
+    dwValueLength = SendDlgItemMessage(hwndDlg, IDC_VARIABLE_VALUE, WM_GETTEXTLENGTH, 0, 0);
 
     if (dwNameLength == 0 || dwValueLength == 0)
     {
@@ -88,7 +88,7 @@ GatherDataFromListView(HWND hwndListView,
     TCHAR szData[MAX_PATH];
 
     /* Gather the number of items for the semi-colon */
-    NumberOfItems = (DWORD)ListView_GetItemCount(hwndListView);
+    NumberOfItems = ListView_GetItemCount(hwndListView);
 
     if (NumberOfItems == 0)
     {
@@ -309,6 +309,7 @@ BrowseRequiredFolder(HWND hwndDlg,
     {
         if (DlgData->bIsFriendlyUI)
         {
+            /* If no item is selected then create a new empty item and add the required location to it */
             if (!DlgData->bIsItemSelected)
             {
                 DlgData->dwSelectedValueIndex = ListView_GetItemCount(hwndListView);
@@ -344,7 +345,7 @@ MoveListItem(HWND hwndDlg,
     
     hwndListView = GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE);
     
-    dwLastIndex = (DWORD)ListView_GetItemCount(hwndListView) - 1;
+    dwLastIndex = ListView_GetItemCount(hwndListView) - 1;
     dwSrcIndex = DlgData->dwSelectedValueIndex;
     dwDestIndex = bMoveUp ? (dwSrcIndex - 1) : (dwSrcIndex + 1);
     
@@ -631,6 +632,7 @@ OnEndLabelEdit(NMLVDISPINFO* pnmv)
 
     SendMessage(hwndEdit, WM_GETTEXT, _countof(szNewDir), (LPARAM)szNewDir);
 
+    /* If there is nothing in the text box then remove the item */
     if (_tcslen(szNewDir) == 0)
     {
         ListView_DeleteItem(pnmv->hdr.hwndFrom, pnmv->item.iItem);
@@ -640,6 +642,7 @@ OnEndLabelEdit(NMLVDISPINFO* pnmv)
         return FALSE;
     }
 
+    /* If nothing has been changed then just bail out */
     if (_tcscmp(szOldDir, szNewDir) == 0)
     {
         return FALSE;
@@ -664,6 +667,7 @@ OnNotifyEditVariableDlg(HWND hwndDlg, PDIALOG_DATA DlgData, NMHDR *phdr)
             {
                 case NM_CLICK:
                 {
+                    /* Detect if an item is selected */
                     DlgData->bIsItemSelected = (lpnmlv->iItem != -1);
                     if (lpnmlv->iItem != -1)
                     {
@@ -674,6 +678,7 @@ OnNotifyEditVariableDlg(HWND hwndDlg, PDIALOG_DATA DlgData, NMHDR *phdr)
 
                 case NM_DBLCLK:
                 {
+                    /* Either simulate IDC_BUTTON_NEW or edit an item depending upon the condition */
                     if (lpnmlv->iItem == -1)
                     {
                         SendMessage(GetDlgItem(hwndDlg, IDC_BUTTON_NEW), BM_CLICK, 0, 0);
@@ -693,11 +698,6 @@ OnNotifyEditVariableDlg(HWND hwndDlg, PDIALOG_DATA DlgData, NMHDR *phdr)
                 case LVN_ENDLABELEDIT:
                 {
                     return OnEndLabelEdit((NMLVDISPINFO*)phdr);
-                }
-
-                case LVN_ITEMCHANGED:
-                {
-                    
                 }
             }
             break;
@@ -837,7 +837,7 @@ EditVariableDlgProc(HWND hwndDlg,
                 {
                     DWORD dwLastIndex;
 
-                    dwLastIndex = (DWORD)ListView_GetItemCount(hwndListView) - 1;
+                    dwLastIndex = ListView_GetItemCount(hwndListView) - 1;
                     ListView_DeleteItem(hwndListView, DlgData->dwSelectedValueIndex);
 
                     if (dwLastIndex == DlgData->dwSelectedValueIndex)
@@ -883,7 +883,7 @@ EditVariableDlgProc(HWND hwndDlg,
 
                 case IDC_BUTTON_NEW:
                 {                    
-                    DlgData->dwSelectedValueIndex = (DWORD)ListView_GetItemCount(hwndListView);
+                    DlgData->dwSelectedValueIndex = ListView_GetItemCount(hwndListView);
                     AddEmptyItem(hwndListView, DlgData->dwSelectedValueIndex);
                     ListView_EditLabel(hwndListView, DlgData->dwSelectedValueIndex);
                     break;
