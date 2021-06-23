@@ -14,7 +14,9 @@
 #include <string.h>
 #include <strsafe.h>
 
-#define CX_LIST 30160  // Make columns ridiculously long in order to avoid resizing it
+#define CX_LIST                         30160  // Make columns ridiculously long in order to avoid resizing it
+#define MAX_STR_LENGTH                  128
+#define NUMBER_OF_RESIZABLE_CONTROLS    10
 
 typedef struct _VARIABLE_DATA
 {
@@ -27,6 +29,7 @@ typedef struct _VARIABLE_DATA
 typedef struct _DIALOG_DATA
 {
     BOOL bIsFriendlyUI;
+    BOOL bIsItemSelected;
     DWORD dwSelectedValueIndex;
     DWORD cxMin;
     DWORD cyMin;
@@ -95,13 +98,13 @@ GatherDataFromListView(HWND hwndListView,
     /* Since the last item doesn't need the semi-colon subtract 1 */
     dwValueLength = NumberOfItems - 1;
 
-    for (i = 0; NumberOfItems > i; i++)
+    for (i = 0; i < NumberOfItems; i++)
     {
         ListView_GetItemText(hwndListView,
                              i,
                              0,
                              szData,
-                             MAX_PATH);
+                             _countof(szData));
         dwValueLength += _tcslen(szData);
     }
 
@@ -109,15 +112,14 @@ GatherDataFromListView(HWND hwndListView,
     {
         VarData->lpRawValue = GlobalAlloc(GPTR, (dwValueLength + 1) * sizeof(TCHAR));
     }
-    else if (_tcslen(VarData->lpRawValue) < dwValueLength)
+    else
     {
         GlobalFree(VarData->lpRawValue);
         VarData->lpRawValue = GlobalAlloc(GPTR, (dwValueLength + 1) * sizeof(TCHAR));
     }
 
-
     /* Copy the variable values while seperating them with a semi-colon except for the last value */
-    for (i = 0; NumberOfItems > i; i++)
+    for (i = 0; i < NumberOfItems; i++)
     {
         if (i > 0)
         {
@@ -127,10 +129,9 @@ GatherDataFromListView(HWND hwndListView,
                              i,
                              0,
                              szData,
-                             MAX_PATH);
+                             _countof(szData));
         StringCchCat(VarData->lpRawValue, dwValueLength + 1, szData);
     }
-    
     return dwValueLength;
 }
 
@@ -189,6 +190,21 @@ ListViewSubclassProc(HWND hListBox,
 }
 
 static VOID
+AddEmptyItem(HWND hwndListView,
+             DWORD dwSelectedValueIndex)
+{
+    LV_ITEM lvi;
+
+    ZeroMemory(&lvi, sizeof(lvi));
+    lvi.mask = LVIF_TEXT | LVIF_STATE;
+    lvi.cchTextMax = MAX_PATH;
+    lvi.pszText = _T("");
+    lvi.iItem = dwSelectedValueIndex;
+    lvi.iSubItem = 0;
+    ListView_InsertItem(hwndListView, &lvi);    
+}
+
+static VOID
 AddValuesToList(HWND hwndDlg,
                    PDIALOG_DATA DlgData)
 {
@@ -202,8 +218,8 @@ AddValuesToList(HWND hwndDlg,
     LPTSTR lpTemp;
     LPTSTR lpToken;
 
-    memset(&column, 0x00, sizeof(column));
-    memset(&lvi, 0x00, sizeof(lvi));
+    ZeroMemory(&column, sizeof(column));
+    ZeroMemory(&lvi, sizeof(lvi));
 
     hwndListView = GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE);
 
@@ -222,7 +238,7 @@ AddValuesToList(HWND hwndDlg,
     lpTemp = GlobalAlloc(GPTR, dwValueLength * sizeof(TCHAR));
     
     StringCchCopy(lpTemp, dwValueLength, DlgData->VarData->lpRawValue);
-    lpToken = wcstok(lpTemp, _T(";"));
+    lpToken = _tcstok(lpTemp, _T(";"));
 
     i = 0;
 
@@ -232,7 +248,7 @@ AddValuesToList(HWND hwndDlg,
         lvi.pszText = lpToken;
         lvi.state = (i == 0) ? LVIS_SELECTED : 0;
         ListView_InsertItem(hwndListView, &lvi);
-        lpToken = wcstok(NULL, _T(";"));
+        lpToken = _tcstok(NULL, _T(";"));
         i++;
     }
 
@@ -271,15 +287,17 @@ static VOID
 BrowseRequiredFolder(HWND hwndDlg,
                      PDIALOG_DATA DlgData)
 {
-    BROWSEINFO bi;
-    LPITEMIDLIST pidllist;
+    HWND hwndListView;
     TCHAR szDir[MAX_PATH];
 
+    BROWSEINFO bi = { 0 };
+    LPITEMIDLIST pidllist;
+
+    ZeroMemory(&bi, sizeof(bi));
     bi.hwndOwner = hwndDlg;
-    bi.lpszTitle = _T("");
-    bi.pidlRoot = NULL;
-    bi.pszDisplayName = _T("");
     bi.ulFlags = BIF_NEWDIALOGSTYLE;
+
+    hwndListView = GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE);
 
     pidllist = SHBrowseForFolder(&bi);
     if (!pidllist)
@@ -291,20 +309,20 @@ BrowseRequiredFolder(HWND hwndDlg,
     {
         if (DlgData->bIsFriendlyUI)
         {
-            SendDlgItemMessage(hwndDlg,
-                               IDC_LIST_VARIABLE_VALUE,
-                               LB_DELETESTRING,
-                               DlgData->dwSelectedValueIndex, 0);
-            SendDlgItemMessage(hwndDlg,
-                               IDC_LIST_VARIABLE_VALUE,
-                               LB_INSERTSTRING,
-                               DlgData->dwSelectedValueIndex,
-                               (LPARAM)szDir);
-            SendDlgItemMessage(hwndDlg,
-                               IDC_LIST_VARIABLE_VALUE,
-                               LB_SETCURSEL,
-                               DlgData->dwSelectedValueIndex, 0);
+            if (!DlgData->bIsItemSelected)
+            {
+                DlgData->dwSelectedValueIndex = ListView_GetItemCount(hwndListView);
+                AddEmptyItem(hwndListView, DlgData->dwSelectedValueIndex);
+            }
+            ListView_SetItemText(hwndListView,
+                                 DlgData->dwSelectedValueIndex,
+                                 0,
+                                 szDir);
+            ListView_SetItemState(hwndListView, DlgData->dwSelectedValueIndex,
+                                  LVIS_FOCUSED | LVIS_SELECTED,
+                                  LVIS_FOCUSED | LVIS_SELECTED);
         }
+        
         else
         {
             SetDlgItemText(hwndDlg, IDC_VARIABLE_VALUE, szDir);
@@ -325,7 +343,7 @@ MoveListItem(HWND hwndDlg,
     DWORD dwSrcIndex, dwDestIndex, dwLastIndex;
     
     hwndListView = GetDlgItem(hwndDlg, IDC_LIST_VARIABLE_VALUE);
-
+    
     dwLastIndex = (DWORD)ListView_GetItemCount(hwndListView) - 1;
     dwSrcIndex = DlgData->dwSelectedValueIndex;
     dwDestIndex = bMoveUp ? (dwSrcIndex - 1) : (dwSrcIndex + 1);
@@ -336,12 +354,12 @@ MoveListItem(HWND hwndDlg,
                              dwSrcIndex,
                              0,
                              szDest,
-                             MAX_PATH);
+                             _countof(szDest));
         ListView_GetItemText(hwndListView,
                              dwDestIndex,
                              0,
                              szSource,
-                             MAX_PATH);
+                             _countof(szSource));
 
         ListView_SetItemText(hwndListView,
                              dwDestIndex,
@@ -380,7 +398,7 @@ OnSize(HWND hwndDlg, PDIALOG_DATA DlgData, DWORD cx, DWORD cy)
 
     if ((cx != DlgData->cxOld) || (cy != DlgData->cyOld))
     {
-        hdwp = BeginDeferWindowPos(10);
+        hdwp = BeginDeferWindowPos(NUMBER_OF_RESIZABLE_CONTROLS);
 
         GetWindowRect(hwndDlg, &rect);
 
@@ -590,23 +608,30 @@ OnBeginLabelEdit(NMLVDISPINFO* pnmv)
 static BOOL
 OnEndLabelEdit(NMLVDISPINFO* pnmv)
 {
+    HWND hwndEdit;
     TCHAR szOldDir[MAX_PATH];
     TCHAR szNewDir[MAX_PATH];
 
+    hwndEdit = ListView_GetEditControl(pnmv->hdr.hwndFrom);
+    if (hwndEdit == NULL)
+    {
+        return TRUE;
+    }
+    
     /* Leave, if there is no valid listview item */
     if (pnmv->item.iItem == -1)
     {
         return FALSE;
     }
 
-    /* Get the new user name */
     ListView_GetItemText(pnmv->hdr.hwndFrom,
                          pnmv->item.iItem, 0,
                          szOldDir,
                          MAX_PATH);
 
-    /* Delete the item, if there is no text */
-    if (pnmv->item.pszText == NULL)
+    SendMessage(hwndEdit, WM_GETTEXT, _countof(szNewDir), (LPARAM)szNewDir);
+
+    if (_tcslen(szNewDir) == 0)
     {
         ListView_DeleteItem(pnmv->hdr.hwndFrom, pnmv->item.iItem);
         ListView_SetItemState(pnmv->hdr.hwndFrom, pnmv->item.iItem - 1,
@@ -615,16 +640,11 @@ OnEndLabelEdit(NMLVDISPINFO* pnmv)
         return FALSE;
     }
 
-    /* Get the new user name */
-    _tcscpy(szNewDir, pnmv->item.pszText);
-
-    /* Leave, if the user name was not changed */
     if (_tcscmp(szOldDir, szNewDir) == 0)
     {
         return FALSE;
     }
 
-    /* Update the listview item */
     ListView_SetItemText(pnmv->hdr.hwndFrom,
                          pnmv->item.iItem, 0,
                          szNewDir);
@@ -644,7 +664,11 @@ OnNotifyEditVariableDlg(HWND hwndDlg, PDIALOG_DATA DlgData, NMHDR *phdr)
             {
                 case NM_CLICK:
                 {
-                    DlgData->dwSelectedValueIndex = lpnmlv->iItem;
+                    DlgData->bIsItemSelected = (lpnmlv->iItem != -1);
+                    if (lpnmlv->iItem != -1)
+                    {
+                        DlgData->dwSelectedValueIndex = lpnmlv->iItem;
+                    }
                     break;
                 }
 
@@ -669,6 +693,11 @@ OnNotifyEditVariableDlg(HWND hwndDlg, PDIALOG_DATA DlgData, NMHDR *phdr)
                 case LVN_ENDLABELEDIT:
                 {
                     return OnEndLabelEdit((NMLVDISPINFO*)phdr);
+                }
+
+                case LVN_ITEMCHANGED:
+                {
+                    
                 }
             }
             break;
@@ -807,6 +836,7 @@ EditVariableDlgProc(HWND hwndDlg,
                 case IDC_BUTTON_DELETE:
                 {
                     DWORD dwLastIndex;
+
                     dwLastIndex = (DWORD)ListView_GetItemCount(hwndListView) - 1;
                     ListView_DeleteItem(hwndListView, DlgData->dwSelectedValueIndex);
 
@@ -835,11 +865,11 @@ EditVariableDlgProc(HWND hwndDlg,
                 
                 case IDC_BUTTON_EDIT_TEXT:
                 {
-                    TCHAR szStr[128] = _T("");
-                    TCHAR szStr2[98] = _T("");
+                    TCHAR szStr[MAX_STR_LENGTH] = _T("");
+                    TCHAR szStr2[MAX_STR_LENGTH] = _T("");
 
-                    LoadString(hApplet, IDS_EVIRONMENT_WARNING, szStr, _countof(szStr));
-                    LoadString(hApplet, IDS_EVIRONMENT_WARNING_TITLE, szStr2, _countof(szStr2));
+                    LoadString(hApplet, IDS_ENVIRONMENT_WARNING, szStr, _countof(szStr));
+                    LoadString(hApplet, IDS_ENVIRONMENT_WARNING_TITLE, szStr2, _countof(szStr2));
                     
                     if (MessageBox(hwndDlg,
                                    szStr,
@@ -852,19 +882,9 @@ EditVariableDlgProc(HWND hwndDlg,
                 }
 
                 case IDC_BUTTON_NEW:
-                {
-                    LV_ITEM lvi;
-                    
+                {                    
                     DlgData->dwSelectedValueIndex = (DWORD)ListView_GetItemCount(hwndListView);
-
-                    memset(&lvi, 0x00, sizeof(lvi));
-                    lvi.mask = LVIF_TEXT | LVIF_STATE;
-                    lvi.cchTextMax = MAX_PATH;
-                    lvi.pszText = _T("");
-                    lvi.iItem = DlgData->dwSelectedValueIndex;
-                    lvi.iSubItem = 0;
-                    ListView_InsertItem(hwndListView, &lvi);
-
+                    AddEmptyItem(hwndListView, DlgData->dwSelectedValueIndex);
                     ListView_EditLabel(hwndListView, DlgData->dwSelectedValueIndex);
                     break;
                 }

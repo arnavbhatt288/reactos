@@ -63,8 +63,8 @@
 
 #define IDS_UPTIME_FORMAT 140
 
-#define IDS_EVIRONMENT_WARNING            150
-#define IDS_EVIRONMENT_WARNING_TITLE      151
+#define IDS_ENVIRONMENT_WARNING            150
+#define IDS_ENVIRONMENT_WARNING_TITLE      151
 
 /* Propsheet - general */
 #define IDD_PROPPAGEGENERAL  100
