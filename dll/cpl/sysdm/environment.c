@@ -10,7 +10,7 @@
 
 #include "precomp.h"
 #include <commdlg.h>
-#include "commctrl.h"
+#include <commctrl.h>
 #include <string.h>
 #include <strsafe.h>
 
